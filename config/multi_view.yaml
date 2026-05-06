@@ -1,0 +1,15 @@
+# 多视角拼接参数
+
+views: 8                # 生成的视角数
+angle_range: 60         # 相邻视角最大旋转角 (度)
+trans_range: 0.3        # 相邻视角最大平移量
+noise: 0.001            # 高斯噪声标准差
+
+# 增量配准
+model_downsample_step: 3        # 每 N 步降采样一次模型
+min_fitness: 0.3                # 低于此值触发链式回退
+fallback_to_chain: true         # 是否启用回退
+
+# 输出
+save_intermediate: true         # 是否保存中间步骤
+voxel_final_multiplier: 0.5     # 最终降采样倍率 (× voxel_size)

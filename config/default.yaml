@@ -1,0 +1,33 @@
+# 默认配准参数
+# 根据配准说明.docx 的经验总结
+
+# 通用参数
+max_iterations: 64       # FGR 最大迭代次数
+max_tuples: 1000         # 最多同名点个数
+icp_max_iterations: 2000 # ICP 最大迭代次数
+
+# 密度-参数映射（voxel_size ≈ 密度×10, threshold ≈ 密度×4~10）
+presets:
+  small:        # Dino, Elephant, cloud_bin, online_source (密度 0.004~0.007)
+    voxel_size: 0.05
+    threshold: 0.02
+
+  tiny:         # 1.pcd, 2.pcd (密度 ~0.0005)
+    voxel_size: 0.005
+    threshold: 0.002
+
+  large:        # Chair (密度 ~1.7)
+    voxel_size: 16
+    threshold: 16
+    max_iterations: 300
+
+  sfm_kinect:   # lab2_sfm + lab2_kinect
+    voxel_size: 0.03
+    threshold: 0.03
+
+# FPFH 特征参数
+fpfh:
+  normal_radius_multiplier: 2.0
+  normal_max_nn: 30
+  feature_radius_multiplier: 5.0
+  feature_max_nn: 100
