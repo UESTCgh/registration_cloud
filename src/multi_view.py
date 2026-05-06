@@ -33,22 +33,32 @@ class MultiViewStitcher:
         self.fallbacks = [False]
 
     def add_view(self, view):
-        """注册并融合一个新视角"""
+        """注册并融合一个新视角：
+        1) 先尝试直接配准到累积模型
+        2) 若失败，用链式配准求初值，再 ICP 精调到模型"""
         i = len(self.views)
-
-        # 尝试注册到累积模型
-        result = register(view, self.model_down,
-                          self.voxel_size, self.threshold)
         used_fallback = False
 
+        # 直接配准到模型
+        result = register(view, self.model_down,
+                          self.voxel_size, self.threshold)
+        T_ref = result.transformation
+
         if result.fitness < self.min_fitness:
-            # 回退到链式配准（注册到上一帧）
-            result = register(view, self.views[i - 1],
+            # 回退：先配准到上一帧（重叠大），得到链式初值
+            chain = register(view, self.views[i - 1],
                               self.voxel_size, self.threshold)
-            T_ref = np.dot(self.poses[i - 1], result.transformation)
+            T_chain = np.dot(self.poses[i - 1], chain.transformation)
+
+            # 用链式结果做初值，ICP 精调到累积模型
+            from .icp import icp_point_to_point
+            result = icp_point_to_point(view, self.model_down,
+                                         self.threshold, T_chain)
+            if result.fitness > chain.fitness:
+                T_ref = result.transformation
+            else:
+                T_ref = T_chain
             used_fallback = True
-        else:
-            T_ref = result.transformation
 
         self.views.append(view)
         self.poses.append(T_ref)
@@ -58,7 +68,7 @@ class MultiViewStitcher:
         aligned = copy.deepcopy(view).transform(T_ref)
         self.model += aligned
 
-        # 周期性降采样（每 N 步）
+        # 周期性降采样
         if i % self.downsample_every == 0:
             self.model_down = self.model.voxel_down_sample(self.voxel_size)
 

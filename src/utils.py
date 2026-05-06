@@ -1,4 +1,4 @@
-"""工具函数：密度计算、预处理、可视化"""
+"""工具函数：密度计算、点云厚度、预处理、可视化"""
 
 import open3d as o3d
 import numpy as np
@@ -14,6 +14,41 @@ def estimate_density(pcd):
         [_, _, dis] = kdtree.search_knn_vector_3d(points[i], 2)
         dd[i] = dis[1]
     return float(np.mean(np.sqrt(dd)))
+
+
+def compute_thickness(pcd, k=20):
+    """计算点云厚度（局部平面拟合残差）
+
+    对每个点 p_i，用 k 近邻拟合局部平面，计算 p_i 到该平面的距离 d_i。
+    返回 {'mean', 'std', 'median', 'max', 'rms'} 五项统计量。
+    值越大说明点云越"厚"（噪声大/配准偏差大/表面粗糙）。
+    """
+    pts = np.asarray(pcd.points)
+    n = len(pts)
+    if n < k + 3:
+        return {"mean": 0.0, "std": 0.0, "median": 0.0, "max": 0.0, "rms": 0.0}
+
+    kdtree = o3d.geometry.KDTreeFlann(pcd)
+    residuals = np.zeros(n)
+
+    for i in range(n):
+        [_, idx, _] = kdtree.search_knn_vector_3d(pts[i], k)
+        neighbors = pts[idx]                          # (k, 3)
+        centroid = neighbors.mean(axis=0)             # (3,)
+        cov = np.cov(neighbors - centroid, rowvar=False)  # (3, 3)
+        # 最小特征值对应的特征向量 = 法向量
+        eigvals, eigvecs = np.linalg.eigh(cov)
+        normal = eigvecs[:, 0]                        # 法向量 (3,)
+        # 点到局部平面的距离
+        residuals[i] = abs(np.dot(pts[i] - centroid, normal))
+
+    return {
+        "mean":   float(np.mean(residuals)),
+        "std":    float(np.std(residuals)),
+        "median": float(np.median(residuals)),
+        "max":    float(np.max(residuals)),
+        "rms":    float(np.sqrt(np.mean(residuals ** 2))),
+    }
 
 
 def preprocess(pcd, voxel_size, normal_radius_mult=2.0, normal_max_nn=30,
