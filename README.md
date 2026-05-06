@@ -69,14 +69,14 @@ python3 scripts/multi_view_demo.py --pcd Chair.pcd --views 6 --angle_range 30
 
 ## 配准参数经验
 
-| 密度范围 | voxel_size | threshold | 典型点云 |
-|---|---|---|---|
-| 0.004~0.007 | 0.05 | 0.02 | Dino, Elephant, cloud_bin |
-| ~0.0005 | 0.005 | 0.002 | 1.pcd, 2.pcd |
-| ~1.7 | 16 | 16 | Chair |
+| 场景 | 密度范围 | voxel_size | threshold | angle_range |
+|---|---|---|---|---|
+| 高精度小物体 | <0.001 | 密度 × 8 | 密度 × 3 | 30-45° |
+| 通用 | 0.001-0.01 | **密度 × 10** | **密度 × 5** | 45-60° |
+| 大场景稀疏 | 0.01-0.1 | 密度 × 10 | 密度 × 5 | 30-40° |
+| 超稀疏 | >1.0 | **密度 × 1.5** | 密度 × 1.5 | 20-40° |
 
-- **voxel_size**: 调成密度的 10 倍左右
-- **threshold**: 调成密度的 4~10 倍
+> 详细指标见 [doc/metrics.md](doc/metrics.md)
 
 ## 点云厚度
 
