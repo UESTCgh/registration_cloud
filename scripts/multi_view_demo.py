@@ -186,11 +186,13 @@ stitcher.init_with_view(views[0])
 
 print("\n--- 增量配准过程 ---")
 for i in range(1, n_views):
-    print(f"  注册视角 {i} -> 模型 ({len(stitcher.model_down.points)} 点) ...",
+    n_prev = len(stitcher.views[i-1].points) if i > 0 else 0
+    print(f"  注册视角 {i} ({len(views[i].points)} pts) -> 模型 ({len(stitcher.model_down.points)} pts) ...",
           end=" ", flush=True)
-    result = stitcher.add_view(views[i])
-    tag = "" if not stitcher.fallbacks[-1] else " [回退]"
-    print(f"fitness={result.fitness:.4f}, RMSE={result.inlier_rmse:.6f}{tag}")
+    result, ref = stitcher.add_view(views[i])
+    tag = " [模型]" if ref == -1 else f" [兜底 ref={ref}]"
+    flag = " !" if result.fitness < 0.2 else ""
+    print(f"fitness={result.fitness:.4f}, RMSE={result.inlier_rmse:.6f}{tag}{flag}")
 
     if i % stitcher.downsample_every == 0 or i == n_views - 1:
         print(f"  L- 模型: {len(stitcher.model.points)} 点 -> "

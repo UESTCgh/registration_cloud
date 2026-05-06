@@ -8,83 +8,127 @@ from .registration import register
 from .utils import preprocess
 
 
+def _ransac_register(src, dst, voxel_size, threshold):
+    src_d, src_f = preprocess(src, voxel_size)
+    dst_d, dst_f = preprocess(dst, voxel_size)
+    result = o3d.pipelines.registration.registration_ransac_based_on_feature_matching(
+        src_d, dst_d, src_f, dst_f, True,
+        threshold * 3,
+        o3d.pipelines.registration.TransformationEstimationPointToPoint(False),
+        4,
+        [o3d.pipelines.registration.CorrespondenceCheckerBasedOnEdgeLength(0.9),
+         o3d.pipelines.registration.CorrespondenceCheckerBasedOnDistance(threshold * 3)],
+        o3d.pipelines.registration.RANSACConvergenceCriteria(100000, 0.999))
+    return o3d.pipelines.registration.registration_icp(
+        src, dst, threshold, result.transformation,
+        o3d.pipelines.registration.TransformationEstimationPointToPoint(),
+        o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=2000))
+
+
+def _try_one(src, dst, voxel_size, threshold):
+    return register(src, dst, voxel_size, threshold)
+
+
 class MultiViewStitcher:
     """增量式多视角点云拼接器"""
 
-    def __init__(self, voxel_size, threshold, min_fitness=0.3,
-                 downsample_every=3):
+    def __init__(self, voxel_size, threshold, min_fitness=0.25,
+                 downsample_every=3, max_model_points=2000):
         self.voxel_size = voxel_size
         self.threshold = threshold
         self.min_fitness = min_fitness
         self.downsample_every = downsample_every
+        self.max_model_points = max_model_points
 
-        self.model = None          # 累积点云
-        self.model_down = None     # 降采样模型（用于配准）
-        self.views = []            # 原始视角
-        self.poses = []            # 各视角 → 参考系 的变换
-        self.fallbacks = []        # 是否触发了回退
+        self.model = None
+        self.model_down = None
+        self.views = []
+        self.poses = []
+        self.fallbacks = []    # -1=模型直接成功, >=0=以此为参考回退成功
+
+    def _downsample_model(self):
+        vs = self.voxel_size
+        for _ in range(10):
+            md = self.model.voxel_down_sample(vs)
+            if len(md.points) <= self.max_model_points:
+                break
+            vs *= 1.5
+        self.model_down = md
 
     def init_with_view(self, view):
-        """用第一个视角初始化模型"""
         self.model = copy.deepcopy(view)
-        self.model_down = self.model.voxel_down_sample(self.voxel_size)
         self.views = [view]
         self.poses = [np.eye(4)]
-        self.fallbacks = [False]
+        self.fallbacks = [-1]
+        self._downsample_model()
 
     def add_view(self, view):
-        """注册并融合一个新视角：
-        1) 先尝试直接配准到累积模型
-        2) 若失败，用链式配准求初值，再 ICP 精调到模型"""
         i = len(self.views)
-        used_fallback = False
+        ref_idx = -1   # -1=模型, >=0=该视角兜底
 
-        # 直接配准到模型
-        result = register(view, self.model_down,
-                          self.voxel_size, self.threshold)
-        T_ref = result.transformation
+        scales = [(self.voxel_size, self.threshold),
+                  (self.voxel_size * 1.5, self.threshold * 1.5),
+                  (self.voxel_size * 2, self.threshold * 2)]
 
-        if result.fitness < self.min_fitness:
-            # 回退：先配准到上一帧（重叠大），得到链式初值
-            chain = register(view, self.views[i - 1],
-                              self.voxel_size, self.threshold)
-            T_chain = np.dot(self.poses[i - 1], chain.transformation)
+        # 1) 优先配准到累积大模型 — 选最精细尺度中 fitness 达标的
+        best, best_fitness = None, -1.0
+        for vs, th in scales:
+            r = _try_one(view, self.model_down, vs, th)
+            if r.fitness >= self.min_fitness:
+                best, best_fitness = r, r.fitness
+                T_ref = r.transformation
+                ref_idx = -1
+                break  # 精细尺度达标，不再粗化
+            if r.fitness > best_fitness:
+                best, best_fitness = r, r.fitness
+                T_ref = r.transformation
 
-            # 用链式结果做初值，ICP 精调到累积模型
-            from .icp import icp_point_to_point
-            result = icp_point_to_point(view, self.model_down,
-                                         self.threshold, T_chain)
-            if result.fitness > chain.fitness:
-                T_ref = result.transformation
-            else:
-                T_ref = T_chain
-            used_fallback = True
+        # 2) 模型不达标 → 多参考兜底
+        if best_fitness < self.min_fitness:
+            for j in range(i - 1, max(i - 10, -1), -1):
+                for vs, th in scales:
+                    r = _try_one(view, self.views[j], vs, th)
+                    if r.fitness > best_fitness:
+                        best_fitness = r.fitness
+                        T_ref = np.dot(self.poses[j], r.transformation)
+                        best = r
+                        ref_idx = j
+                    if r.fitness >= self.min_fitness:
+                        break
+                if best_fitness >= self.min_fitness:
+                    break
+
+        # 3) 还不行 → RANSAC 兜底
+        if best_fitness < 0.2:
+            for j in range(i - 1, max(i - 5, -1), -1):
+                r = _ransac_register(view, self.views[j],
+                                     self.voxel_size * 2, self.threshold * 2)
+                if r.fitness > best_fitness:
+                    best_fitness = r.fitness
+                    T_ref = np.dot(self.poses[j], r.transformation)
+                    best = r
+                    ref_idx = j
 
         self.views.append(view)
         self.poses.append(T_ref)
-        self.fallbacks.append(used_fallback)
+        self.fallbacks.append(ref_idx)
 
-        # 融入模型
         aligned = copy.deepcopy(view).transform(T_ref)
         self.model += aligned
 
-        # 周期性降采样
         if i % self.downsample_every == 0:
-            self.model_down = self.model.voxel_down_sample(self.voxel_size)
+            self._downsample_model()
 
-        return result
+        return best, ref_idx
 
     def finalize(self):
-        """最后一次降采样，在拼接前调用"""
-        self.model_down = self.model.voxel_down_sample(self.voxel_size)
+        self._downsample_model()
 
     def stitched(self, voxel_final_mult=0.5):
-        """返回降采样后的最终拼接点云"""
         vs = max(self.voxel_size * voxel_final_mult, 0.002)
         return self.model.voxel_down_sample(vs)
 
     def intermediate(self, step, voxel_final_mult=0.5):
-        """重建第 step 步时的中间模型"""
         partial = o3d.geometry.PointCloud()
         for j in range(min(step + 1, len(self.views))):
             partial += copy.deepcopy(self.views[j]).transform(self.poses[j])
